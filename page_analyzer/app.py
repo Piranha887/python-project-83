@@ -15,7 +15,7 @@ from page_analyzer.url import validate_url
 app = Flask(__name__)
 
 load_dotenv()
-# app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
 
 
 # DATABASE_URL = os.getenv('DATABASE_URL')
