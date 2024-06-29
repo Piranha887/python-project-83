@@ -14,7 +14,7 @@ from page_analyzer.url import validate_url
 
 app = Flask(__name__)
 
-# load_dotenv()
+load_dotenv()
 # app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
 
 
@@ -33,11 +33,11 @@ app = Flask(__name__)
 def get_connection():
     try:
         conn = psycopg2.connect(
-            host='localhost',
-            port="5432",
-            user='postgres',
-            password='1234',
-            database='python-project-83'
+            host=os.getenv('HOST'),
+            port=os.getenv('PORT'),
+            user=os.getenv('USER'),
+            password=os.getenv('PASSWORD'),
+            database='DATABASE'
         )
         print("Успешно подключено к базе данных PostgreSQL.")
         return conn
