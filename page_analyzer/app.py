@@ -1,59 +1,23 @@
-import sys
-
-import bs4
-import psycopg2
-import psycopg2.extras
 import os
 import requests
-import datetime
 from flask import Flask, request, url_for, flash, redirect, render_template
 from dotenv import load_dotenv
 from requests import ConnectionError, HTTPError
 from urllib.parse import urlparse
-from page_analyzer.url import validate_url
+from page_analyzer.utils import validate_url
+from page_analyzer.page_checker import get_content_of_page
+from page_analyzer import db
 
 app = Flask(__name__)
 
 load_dotenv()
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
 
-
-# DATABASE_URL = os.getenv('DATABASE_URL')
-
-
-# def get_connection():
-#     return psycopg2.connect(
-#         host='localhost',
-#         port="5432",
-#         user='postgres',
-#         password='1234',
-#         database='python-project-83')
-
-
-def get_connection():
-    try:
-        conn = psycopg2.connect(
-            host=os.getenv('HOST'),
-            port=os.getenv('PORT'),
-            user=os.getenv('USER'),
-            password=os.getenv('PASSWORD'),
-            database='DATABASE'
-        )
-        print("Успешно подключено к базе данных PostgreSQL.")
-        return conn
-    except psycopg2.Error as e:
-        print(f"Ошибка при подключении к базе данных PostgreSQL: {e}")
-        sys.exit(1)
-
-
-def get_content_of_page(page_data):
-    soup = bs4.BeautifulSoup(page_data, 'html.parser')
-    h1 = soup.find('h1').get_text() if soup.find('h1') else ''
-    title = soup.find('title').get_text() if soup.find('title') else ''
-    meta = soup.find(
-        'meta', {"name": "description"}).attrs['content'] if soup.find(
-        'meta', {"name": "description"}) else ''
-    return h1, title, meta
+print("HOST:", os.getenv("HOST"))
+print("PORT:", os.getenv("PORT"))
+print("USER:", os.getenv("USER"))
+print("PASSWORD:", os.getenv("PASSWORD"))
+print("DATABASE:", os.getenv("DATABASE"))
 
 
 @app.route('/')
@@ -74,84 +38,43 @@ def post_url():
         ), 422
     parsed_url = urlparse(url)
     valid_url = parsed_url.scheme + '://' + parsed_url.netloc
-    with get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
-            cur.execute("""
-                SELECT id FROM urls
-                WHERE name = %s""", [valid_url])
-            result = cur.fetchone()
-            if result:
-                flash("Страница уже существует", "alert alert-info")
-                return redirect(url_for('url_added', id=result.id))
+    result = db.get_url_id_by_name(valid_url)
+    if result:
+        flash("Страница уже существует", "alert alert-info")
+        return redirect(url_for('url_added', id=result.id))
 
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            date = datetime.date.today()
-            cur.execute("""
-                INSERT INTO urls (name, created_at)
-                VALUES (%s, %s) RETURNING id""", [valid_url, date])
-            url_id = cur.fetchone()[0]
-            conn.commit()
-        flash("Страница успешно добавлена", "alert alert-success")
-        return redirect(url_for('url_added', id=url_id))
+    url_id = db.add_url(valid_url)
+    flash("Страница успешно добавлена", "alert alert-success")
+    return redirect(url_for('url_added', id=url_id))
 
 
 @app.route('/urls/<id>')
 def url_added(id):
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT name, created_at
-                FROM urls
-                WHERE id = %s""", [id])
-            url_name, url_created_at = cur.fetchone()
-
-    with get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
-            cur.execute("""
-                SELECT id, created_at, status_code, h1, title, description
-                FROM url_checks
-                WHERE url_id = %s
-                ORDER BY id DESC""", [id])
-            rows = cur.fetchall()
+    url_data = db.get_url_by_id(id)
+    url_name, url_created_at = url_data
+    checks = db.get_url_checks_by_id(id)
     return render_template(
         'page.html',
         url_name=url_name,
         url_id=id,
         url_created_at=url_created_at.date(),
-        checks=rows
+        checks=checks
     )
 
 
 @app.get('/urls')
 def urls_get():
-    with get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
-            cur.execute("""
-                SELECT
-                DISTINCT ON (urls.id) urls.id, urls.name, MAX(url_checks.created_at), url_checks.status_code
-                FROM urls
-                LEFT JOIN url_checks ON urls.id = url_checks.url_id
-                GROUP BY urls.id, url_checks.status_code
-                ORDER BY urls.id DESC""")
-            rows = cur.fetchall()
+    checks = db.get_all_urls()
     return render_template(
         'pages.html',
-        checks=rows
+        checks=checks
     )
 
 
 @app.route('/urls/<id>/checks', methods=['POST'])
 def id_check(id):
-    with get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
-            cur.execute("""
-                SELECT name
-                FROM urls
-                WHERE id = %s""", [id])
-            result = cur.fetchone()
-
-    url_name = result.name
+    url_data = db.get_url_by_id(id)
+    url_name = url_data.name
     try:
         response = requests.get(url_name)
         response.raise_for_status()
@@ -161,13 +84,6 @@ def id_check(id):
 
     status_code = response.status_code
     h1, title, meta = get_content_of_page(response.text)
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            date = datetime.date.today()
-            cur.execute("""
-                INSERT INTO url_checks (url_id, created_at, status_code, h1, title, description)
-                VALUES (%s, %s, %s, %s, %s, %s)""", [
-                id, date, status_code, h1, title, meta])
-            conn.commit()
+    db.add_url_check(id, status_code, h1, title, meta)
     flash("Страница успешно проверена", "alert alert-success")
     return redirect(url_for('url_added', id=id))
